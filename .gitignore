@@ -1,0 +1,55 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Conda / virtual environments
+.venv/
+venv/
+env/
+ENV/
+.conda/
+ogc2026/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and runtime outputs
+*.log
+logs/
+output/
+outputs/
+results/
+tmp/
+temp/
+
+# Local GUI / tester state
+alg_tester/settings.local.json
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Large local data files commonly used for instances/results
+*.zip
+*.tar
+*.tar.gz
+*.7z
