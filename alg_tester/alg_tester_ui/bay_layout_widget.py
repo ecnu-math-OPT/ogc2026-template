@@ -202,7 +202,8 @@ class BlockItem:
 
     @property
     def orientations(self):
-        return self.data["shape"]
+        # orientation ID 순으로 정렬: orient_idx 증가 = 항상 같은 방향 회전 보장
+        return sorted(self.data["shape"], key=lambda o: o["orientation"])
 
     @property
     def current_orient(self):
@@ -237,6 +238,27 @@ class BlockItem:
             return (0, 0, 1, 1)
         all_v = [v for l in layers for v in l]
         return _bounding_box(all_v)
+
+    @property
+    def raw_orient_idx(self) -> int:
+        """data['shape'] 원본 배열에서 현재 orientation의 실제 인덱스.
+        UtilsBlock 등 raw shape 배열을 직접 접근하는 곳에 사용."""
+        target_id = self.current_orient["orientation"]
+        for i, o in enumerate(self.data["shape"]):
+            if o["orientation"] == target_id:
+                return i
+        return self.orient_idx
+
+    def set_orient_from_raw_idx(self, raw_idx: int):
+        """Solution 로드 시: raw shape 배열 인덱스 → 정렬된 orient_idx로 변환해서 설정."""
+        shape = self.data["shape"]
+        if not shape or raw_idx < 0 or raw_idx >= len(shape):
+            return
+        target_id = shape[raw_idx]["orientation"]
+        for sorted_idx, o in enumerate(self.orientations):
+            if o["orientation"] == target_id:
+                self.orient_idx = sorted_idx
+                return
 
     def rotate_next(self):
         self.orient_idx = (self.orient_idx + 1) % len(self.orientations)
@@ -1438,7 +1460,7 @@ class BayCanvas(QWidget):
         # Blocks being EXITed are in crane-lifting state and excluded from collision checks
         util_blocks = [
             UtilsBlock(block_id=b.id, block_data=b.data,
-                       x=b.x, y=b.y, orient_idx=b.orient_idx)
+                       x=b.x, y=b.y, orient_idx=b.raw_orient_idx)
             for b in self.blocks
             if b.id not in self.exiting_block_ids
         ]
@@ -1471,14 +1493,14 @@ class BayCanvas(QWidget):
             bay = UtilsBay(width=int(self.bay_w), height=int(self.bay_h))
             changed_util = UtilsBlock(
                 block_id=changed_item.id, block_data=changed_item.data,
-                x=changed_item.x, y=changed_item.y, orient_idx=changed_item.orient_idx,
+                x=changed_item.x, y=changed_item.y, orient_idx=changed_item.raw_orient_idx,
             )
             for other in self.blocks:
                 if other.id == changed_blk_id:
                     continue
                 other_util = UtilsBlock(
                     block_id=other.id, block_data=other.data,
-                    x=other.x, y=other.y, orient_idx=other.orient_idx,
+                    x=other.x, y=other.y, orient_idx=other.raw_orient_idx,
                 )
                 pair_results = check_collisions(
                     bay, [changed_util, other_util],
@@ -1916,9 +1938,9 @@ class BayGanttPanel(QWidget):
         scroll.setWidget(self._canvas)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setFixedHeight(200)
+        scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self._scroll = scroll
-        layout.addWidget(scroll)
+        layout.addWidget(scroll, stretch=1)
 
     # -- Public API ----------------------------------------------------------
     def refresh_from_bays(self, instance: dict,

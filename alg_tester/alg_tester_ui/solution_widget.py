@@ -31,7 +31,7 @@ from typing import Optional
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QComboBox, QScrollArea, QPushButton, QSplitter,
-    QPlainTextEdit, QFrame, QCheckBox,
+    QPlainTextEdit, QFrame, QCheckBox, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QTextCursor
@@ -449,6 +449,19 @@ class SolutionTab(QWidget):
         ctrl.addStretch()
         self._info_label = QLabel("")
         ctrl.addWidget(self._info_label)
+
+        self._btn_save_solution = QPushButton("💾 Save Solution")
+        self._btn_save_solution.setFixedHeight(22)
+        self._btn_save_solution.setEnabled(False)
+        self._btn_save_solution.setStyleSheet(
+            "QPushButton { padding: 1px 10px; border-radius: 4px;"
+            " border: 1px solid #888; background: #2d6a4f; color: #fff; font-weight: bold; }"
+            "QPushButton:hover { background: #40916c; }"
+            "QPushButton:disabled { background: #555; color: #777; border-color: #666; }"
+        )
+        self._btn_save_solution.clicked.connect(self._on_save_solution)
+        ctrl.addWidget(self._btn_save_solution)
+
         outer.addLayout(ctrl)
 
         # -- Panel 1: bay canvases (scrollable) -------------------------------
@@ -508,6 +521,7 @@ class SolutionTab(QWidget):
     def set_instance(self, instance: dict):
         self._instance = instance
         self._solution = None
+        self._btn_save_solution.setEnabled(False)
         self._lbl_status.setText("Instance loaded -- select an algorithm and press Run")
         self._lbl_status.setStyleSheet("color:#334155;")
         self._clear_solution_ui()
@@ -640,12 +654,35 @@ class SolutionTab(QWidget):
         self._rebuild_bay_canvases()
         self._populate_time_combo()
         self._gantt_panel.set_solution(self._instance, solution)
+        self._btn_save_solution.setEnabled(True)
 
     def _on_run_error(self, msg: str):
         self._lbl_status.setText(f"Error: {msg[:160]}")
         self._lbl_status.setStyleSheet("color:#dc2626;")
         self._lbl_status.setToolTip(msg)
         self._append_output(f"[ERROR]\n{msg}\n")
+
+    # -------------------------------------------------------------------------
+    # Save solution
+    # -------------------------------------------------------------------------
+    def _on_save_solution(self):
+        if self._solution is None:
+            return
+        # 기본 파일명: instance name + __results__.json
+        inst_name = (self._instance or {}).get("name", "solution")
+        default_name = f"{inst_name}__results__.json"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Solution", default_name,
+            "JSON files (*.json);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._solution, f, ensure_ascii=False, indent=2)
+            self._append_output(f"[{time.strftime('%H:%M:%S')}] Solution saved to: {path}\n")
+        except Exception as e:
+            QMessageBox.critical(self, "Save failed", str(e))
 
     # -------------------------------------------------------------------------
     # Console helpers
@@ -839,7 +876,7 @@ class SolutionTab(QWidget):
                 return None
             blk_data = self._instance["blocks"][bid]
             item = BlockItem(bid, blk_data)
-            item.orient_idx = a["orient_idx"]
+            item.set_orient_from_raw_idx(a["orient_idx"])
             item.x = float(a["x"])
             item.y = float(a["y"])
             self._bay_canvases[bay_id].blocks.append(item)

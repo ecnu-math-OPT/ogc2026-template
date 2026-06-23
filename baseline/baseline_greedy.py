@@ -87,12 +87,6 @@ def _block_bbox(block_data: dict, orient_idx: int) -> tuple[float, float, float,
     return _bounding_box(all_verts)
 
 
-def _block_size(block_data: dict, orient_idx: int) -> tuple[float, float]:
-    """(width, height) of a block derived from its anchored bounding box."""
-    bb = _block_bbox(block_data, orient_idx)
-    return (bb[2] - bb[0], bb[3] - bb[1])
-
-
 # -----------------------------------------------------------------------------
 # Helper: time interval overlap check
 # -----------------------------------------------------------------------------
@@ -220,16 +214,18 @@ def _find_earliest_slot(new_blk: Block,
         entry  = max(r_time, entry_candidate)
         exit_t = entry + proc
 
-        # Stage-2: blocks whose interval [a_k, e_k) contains entry_time
+        # Stage-2: blocks already present when new_blk arrives.
+        # Mirrors check_feasibility: a_k < entry < e_k  (strict lower bound --
+        # blocks entering at the same moment are handled by Stage-5 ordering).
         present_at_entry = [
             b for b, (a, e) in zip(placed_in_bay, schedule_in_bay)
-            if a <= entry < e
+            if a < entry < e
         ]
         if check_entry(bay, present_at_entry, new_blk, fast=True):
             continue  # crane path blocked at entry -> try next exit boundary
 
-        # Stage-3: blocks whose interval [a_k, e_k) strictly contains exit_t
-        # (a_k < exit_t AND e_k > exit_t means the block spans across exit_t)
+        # Stage-3: blocks still present when new_blk departs.
+        # Mirrors check_feasibility: a_k < exit_t < e_k  (strict both ends).
         present_at_exit = [new_blk] + [
             b for b, (a, e) in zip(placed_in_bay, schedule_in_bay)
             if a < exit_t < e
@@ -237,16 +233,19 @@ def _find_earliest_slot(new_blk: Block,
         if check_exit(bay, present_at_exit, new_blk, fast=True):
             continue  # crane path blocked at exit -> try next exit boundary
 
-        # Stage-4 pre-check: blocks strictly interior to [entry, exit_t).
-        # These blocks are invisible to Stage-2 (not yet present at entry)
-        # and Stage-3 (already gone at exit), but are physically co-present
-        # during [a_k, e_k) -- a subset of [entry, exit_t).  A spatial
-        # collision with any such block would cause a Stage-4 violation after
-        # placement; catch it here to avoid re-triggering repair passes.
+        # Stage-4 pre-check: blocks that co-exist with new_blk during (entry, exit_t)
+        # but are absent at both boundary moments, so Stage-2 and Stage-3 above
+        # don't cover them.  A block b_other falls into this gap when:
+        #   a_other >= entry  (not caught by Stage-2: a_k < entry is false)
+        #   e_other <= exit_t (not caught by Stage-3: e_k > exit_t is false)
+        # AND its interval actually overlaps [entry, exit_t).
+        # Note: e_other == exit_t means b_other departs exactly when new_blk does;
+        # check_feasibility treats them as co-present during their shared [a,e) so
+        # a spatial collision is still a violation -- include it here.
         s4_blocked = False
         for b_other, (a_other, e_other) in zip(placed_in_bay, schedule_in_bay):
-            if a_other <= entry or e_other >= exit_t:
-                continue  # handled by Stage-2 or Stage-3 above
+            if a_other < entry or e_other > exit_t:
+                continue  # covered by Stage-2 (a_other < entry) or Stage-3 (e_other > exit_t)
             if not _time_overlaps(entry, exit_t, a_other, e_other):
                 continue  # disjoint in time
             if check_collisions(bay, [new_blk, b_other]):
@@ -346,6 +345,43 @@ def greedyalgorithm(prob_info: dict, timelimit: float,
     bays = [Bay.from_dict(d, i) for i, d in enumerate(bays_data)]
     for i, b in enumerate(bays):
         print(f"[Greedy]   bay[{i}]  {b.width}x{b.height}")
+
+    # -- Instance validity check: every block must have at least one valid -----
+    # integer (x, y) position in at least one bay and orientation.
+    # If not, the problem instance itself is malformed -- abort immediately.
+    invalid_blocks = []
+    for bi, blk_data in enumerate(blocks_data):
+        placeable = False
+        for bay in bays:
+            for oi in range(len(blk_data["shape"])):
+                bb = _block_bbox(blk_data, oi)
+                lx0, ly0, lx1, ly1 = bb
+                if (math.ceil(-lx0) <= math.floor(bay.width  - lx1) and
+                        math.ceil(-ly0) <= math.floor(bay.height - ly1)):
+                    placeable = True
+                    break
+            if placeable:
+                break
+        if not placeable:
+            invalid_blocks.append(bi)
+    if invalid_blocks:
+        print(f"[Greedy] ERROR: {len(invalid_blocks)} block(s) cannot be placed at any integer "
+              f"position in any bay -- malformed instance.")
+        for bi in invalid_blocks:
+            blk_data = blocks_data[bi]
+            for bay in bays:
+                for oi in range(len(blk_data["shape"])):
+                    bb = _block_bbox(blk_data, oi)
+                    lx0, ly0, lx1, ly1 = bb
+                    bw, bh = lx1 - lx0, ly1 - ly0
+                    print(f"[Greedy]   block {bi} oi={oi} bay{bay.id}({bay.width}x{bay.height}): "
+                          f"bw={bw:.4f} bh={bh:.4f} "
+                          f"px=[{math.ceil(-lx0)},{math.floor(bay.width-lx1)}] "
+                          f"py=[{math.ceil(-ly0)},{math.floor(bay.height-ly1)}]")
+        raise ValueError(
+            f"Malformed instance '{prob_info.get('name', '?')}': "
+            f"block(s) {invalid_blocks} have no valid integer placement in any bay."
+        )
 
     # -- Phase 1: aggressive greedy --------------------------------------------
     sorted_indices = sorted(
@@ -449,21 +485,33 @@ def _force_place(bi: int,
     for bay_id in sorted(range(n_bays), key=lambda j: prefs[j], reverse=True):
         bay = bays[bay_id]
         for oi in range(len(blk_data["shape"])):
-            bw, bh = _block_size(blk_data, oi)
-            if bw <= bay.width + 1e-6 and bh <= bay.height + 1e-6:
-                bb = _block_bbox(blk_data, oi)
-                px = max(0, math.ceil(-bb[0]))
-                py = max(0, math.ceil(-bb[1]))
-                entry = _empty_bay_entry(bay_schedule[bay_id], r_time, proc)
-                return (bay_id, px, py, oi, entry, entry + proc)
+            bb = _block_bbox(blk_data, oi)
+            lx0, ly0, lx1, ly1 = bb
+            # Block translates all layers by (px - ref_x, py - ref_y).
+            # With ref point guaranteed (0,0) by the instance generator:
+            #   world_xmin = lx0 + px >= 0   =>  px >= ceil(-lx0)
+            #   world_xmax = lx1 + px <= W   =>  px <= floor(W - lx1)
+            #   world_ymin = ly0 + py >= 0   =>  py >= ceil(-ly0)
+            #   world_ymax = ly1 + py <= H   =>  py <= floor(H - ly1)
+            # A valid integer px exists iff ceil(-lx0) <= floor(W - lx1).
+            px_lo = math.ceil(-lx0)
+            px_hi = math.floor(bay.width  - lx1)
+            py_lo = math.ceil(-ly0)
+            py_hi = math.floor(bay.height - ly1)
+            if px_lo > px_hi or py_lo > py_hi:
+                continue  # no valid integer position for this orientation
+            px = max(0, px_lo)
+            py = max(0, py_lo)
+            entry = _empty_bay_entry(bay_schedule[bay_id], r_time, proc)
+            return (bay_id, px, py, oi, entry, entry + proc)
 
-    # absolute last resort -- ignore fit
-    bay_id = max(range(n_bays), key=lambda j: prefs[j])
-    bb     = _block_bbox(blk_data, 0)
-    px     = max(0, math.ceil(-bb[0]))
-    py     = max(0, math.ceil(-bb[1]))
-    entry  = _empty_bay_entry(bay_schedule[bay_id], r_time, proc)
-    return (bay_id, px, py, 0, entry, entry + proc)
+    # This path should never be reached: greedyalgorithm() checks at startup that
+    # every block has at least one valid integer position and raises ValueError for
+    # malformed instances before any placement begins.
+    raise RuntimeError(
+        f"_force_place: block {bi} has no valid integer position in any bay "
+        f"-- instance validation should have caught this."
+    )
 
 
 # -----------------------------------------------------------------------------
@@ -581,9 +629,13 @@ def _place_blocks(
 
                 for oi in range(n_orient):
                     blk_bb = _block_bbox(blk_data, oi)
-                    bw = blk_bb[2] - blk_bb[0]
-                    bh = blk_bb[3] - blk_bb[1]
-                    if bw > bay.width + 1e-6 or bh > bay.height + 1e-6:
+                    lx0_oi, ly0_oi, lx1_oi, ly1_oi = blk_bb
+                    # Require a valid integer reference-point position to exist:
+                    #   px in [ceil(-lx0), floor(W - lx1)]
+                    #   py in [ceil(-ly0), floor(H - ly1)]
+                    # If either range is empty there is no integer placement.
+                    if (math.ceil(-lx0_oi) > math.floor(bay.width  - lx1_oi) or
+                            math.ceil(-ly0_oi) > math.floor(bay.height - ly1_oi)):
                         continue
 
                     active_in_bay = [
